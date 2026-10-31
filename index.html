@@ -358,4 +358,267 @@
             if (unsubscribeSantri) unsubscribeSantri();
 
             unsubscribeSantri = db.collection('students').orderBy('name', 'asc').onSnapshot(async (snapshot) => {
-           
+                santriList = [];
+                snapshot.forEach(doc => {
+                    santriList.push({ id: doc.id, ...doc.data() });
+                });
+
+                // Ambil status pembayaran untuk setiap santri pada periode yang dipilih
+                paymentStatusMap = {};
+                const paymentPromises = santriList.map(async (s) => {
+                    try {
+                        const pDoc = await db.collection('students').doc(s.id).collection('payments').doc(periode).get();
+                        if (pDoc.exists) {
+                            paymentStatusMap[s.id] = { isLunas: true, ...pDoc.data() };
+                        } else {
+                            paymentStatusMap[s.id] = { isLunas: false };
+                        }
+                    } catch (e) {
+                        paymentStatusMap[s.id] = { isLunas: false };
+                    }
+                });
+
+                await Promise.all(paymentPromises);
+                renderTable();
+            }, (error) => {
+                console.error(error);
+                document.getElementById('santriTableBody').innerHTML =
+                    `<tr><td colspan="7" class="text-center py-4 text-red-500">
+                        Gagal memuat data dari Portal Si Barok (${error.code || 'error'}).<br>
+                        <span class="text-xs text-gray-500">${error.message}</span>
+                    </td></tr>`;
+            });
+        }
+
+        // =====================================================================
+        // RENDER TABEL & STATISTIK BERDASARKAN RIWAYAT
+        // =====================================================================
+        function renderTable() {
+            const tbody = document.getElementById('santriTableBody');
+            const search = document.getElementById('searchInput').value.toLowerCase();
+            const filterKelas = document.getElementById('filterKelas').value;
+            const filterStatus = document.getElementById('filterStatus').value;
+
+            let filtered = santriList.filter(s => {
+                const matchSearch = (s.name && s.name.toLowerCase().includes(search)) ||
+                                    (s.parentPhone && s.parentPhone.includes(search));
+                const matchKelas = filterKelas === 'all' || s.class === filterKelas;
+
+                const pInfo = paymentStatusMap[s.id] || { isLunas: false };
+                const isLunas = pInfo.isLunas === true;
+
+                const matchStatus = filterStatus === 'all' ||
+                                    (filterStatus === 'lunas' && isLunas) ||
+                                    (filterStatus === 'belum' && !isLunas);
+
+                return matchSearch && matchKelas && matchStatus;
+            });
+
+            // Update Statistik Berdasarkan Periode Terpilih
+            let lunasCount = 0;
+            let totalNominal = 0;
+
+            santriList.forEach(s => {
+                const pInfo = paymentStatusMap[s.id] || { isLunas: false };
+                if (pInfo.isLunas) {
+                    lunasCount++;
+                    totalNominal += (pInfo.amount || 100000);
+                }
+            });
+
+            document.getElementById('statTotalSantri').innerText = santriList.length;
+            document.getElementById('statLunas').innerText = lunasCount;
+            document.getElementById('statBelum').innerText = santriList.length - lunasCount;
+            document.getElementById('statTotalNominal').innerText = `Rp ${totalNominal.toLocaleString('id-ID')}`;
+
+            if (filtered.length === 0) {
+                tbody.innerHTML = `<tr><td colspan="7" class="text-center py-6 text-gray-400">Data santri tidak ditemukan untuk periode ini.</td></tr>`;
+                return;
+            }
+
+            let html = '';
+            filtered.forEach((s, index) => {
+                const pInfo = paymentStatusMap[s.id] || { isLunas: false };
+                const isLunas = pInfo.isLunas;
+                const nominal = isLunas ? (pInfo.amount || 100000) : 0;
+                
+                const safeName = (s.name || '-').replace(/'/g, "’");
+                const statusBadge = isLunas
+                    ? `<span class="bg-emerald-100 text-emerald-800 text-xs px-2.5 py-1 rounded-full font-semibold"><i class="fas fa-check-circle mr-1"></i>Lunas</span>`
+                    : `<span class="bg-rose-100 text-rose-800 text-xs px-2.5 py-1 rounded-full font-semibold"><i class="fas fa-clock mr-1"></i>Belum</span>`;
+
+                const photoUrl = s.photo || (s.gender === 'Perempuan' ? avatarPerempuan : avatarLaki);
+
+                html += `
+        <tr class="hover:bg-emerald-50/50 transition cursor-pointer" onclick="showDetailModal('${s.id}')">
+            <td class="px-4 py-3 font-medium text-gray-500">${index + 1}</td>
+            <td class="px-4 py-3">
+                <div class="flex items-center space-x-3">
+                    <img src="${photoUrl}" class="w-10 h-10 rounded-full object-cover border border-emerald-500/30 flex-shrink-0" alt="Avatar">
+                    <div>
+                        <div class="font-bold text-gray-800 hover:text-emerald-700">${s.name || '-'}</div>
+                        <div class="text-xs text-gray-400">NIS: ${s.nis || '-'}</div>
+                    </div>
+                </div>
+            </td>
+            <td class="px-4 py-3">
+                <div class="font-medium text-gray-700">${s.class || '-'}</div>
+                <div class="text-xs text-emerald-600 font-semibold">${s.jilid || '-'}</div>
+            </td>
+            <td class="px-4 py-3">${s.parentPhone || '-'}</td>
+            <td class="px-4 py-3 font-medium">${isLunas ? 'Rp ' + nominal.toLocaleString('id-ID') : 'Rp 0'}</td>
+            <td class="px-4 py-3 text-center">${statusBadge}</td>
+            <td class="px-4 py-3 text-center no-print" onclick="event.stopPropagation()">
+                <div class="flex items-center justify-center gap-2">
+                    ${isLunas ? `
+                        <button onclick="batalBayar('${s.id}', '${safeName}')" title="Batalkan / Reset Lunas Periode Ini" class="bg-gray-100 hover:bg-rose-100 text-rose-600 p-2 rounded-lg text-xs transition">
+                            <i class="fas fa-undo"></i> Reset
+                        </button>
+                    ` : `
+                        <button onclick="openModal('${s.id}', '${safeName}')" title="Input Lunas Periode Ini" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition">
+                            <i class="fas fa-check mr-1"></i> Tandai Lunas
+                        </button>
+                        <button onclick="tagihWA('${s.parentPhone || ''}', '${safeName}')" title="Kirim Tagihan WA" class="bg-green-500 hover:bg-green-600 text-white p-2 rounded-lg text-xs transition">
+                            <i class="fab fa-whatsapp"></i>
+                        </button>
+                    `}
+                </div>
+            </td>
+        </tr>`;
+            });
+            tbody.innerHTML = html;
+        }
+
+        // =====================================================================
+        // MODAL DETAIL SANTRI
+        // =====================================================================
+        function showDetailModal(id) {
+            const santri = santriList.find(s => s.id === id);
+            if (!santri) return;
+
+            const photoUrl = santri.photo || (santri.gender === 'Perempuan' ? avatarPerempuan : avatarLaki);
+
+            document.getElementById('detailPhoto').src = photoUrl;
+            document.getElementById('detailName').innerText = santri.name || '-';
+            document.getElementById('detailClass').innerText = santri.class || '-';
+            document.getElementById('detailNis').innerText = santri.nis || '-';
+            document.getElementById('detailJilid').innerText = santri.jilid || '-';
+            document.getElementById('detailGender').innerText = santri.gender || '-';
+            document.getElementById('detailTeacher').innerText = santri.teacher || '-';
+            document.getElementById('detailEmail').innerText = santri.parentEmail || '-';
+
+            document.getElementById('detailModal').classList.remove('hidden');
+        }
+
+        function closeDetailModal() {
+            document.getElementById('detailModal').classList.add('hidden');
+        }
+
+        // =====================================================================
+        // MODAL PEMBAYARAN
+        // =====================================================================
+        function openModal(id, name) {
+            document.getElementById('modalStudentId').value = id;
+            document.getElementById('modalStudentName').value = name;
+            document.getElementById('bayarModal').classList.remove('hidden');
+        }
+
+        function closeModal() {
+            document.getElementById('bayarModal').classList.add('hidden');
+        }
+
+        async function simpanPembayaran(e) {
+            e.preventDefault();
+            const id = document.getElementById('modalStudentId').value;
+            const nominal = document.getElementById('modalNominal').value;
+            const metode = document.getElementById('modalMetode').value;
+            const catatan = document.getElementById('modalCatatan').value;
+            const periode = getPeriodeAktif();
+
+            try {
+                const batch = db.batch();
+                const studentRef = db.collection('students').doc(id);
+                const paymentRef = studentRef.collection('payments').doc(periode);
+
+                batch.update(studentRef, {
+                    infaqStatus: true,
+                    paymentMethod: metode,
+                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+
+                batch.set(paymentRef, {
+                    amount: parseInt(nominal),
+                    month: periode,
+                    method: metode,
+                    note: catatan,
+                    date: firebase.firestore.FieldValue.serverTimestamp()
+                });
+
+                await batch.commit();
+
+                closeModal();
+                document.getElementById('formBayar').reset();
+                document.getElementById('modalNominal').value = 100000;
+                Swal.fire('Berhasil', `Pembayaran infaq periode ${periode} berhasil dicatat!`, 'success');
+            } catch (err) {
+                Swal.fire('Error', 'Gagal menyimpan pembayaran: ' + err.message, 'error');
+            }
+        }
+
+        async function batalBayar(id, name) {
+            const periode = getPeriodeAktif();
+            const res = await Swal.fire({
+                title: 'Reset Pembayaran?',
+                text: `Status infaq ananda ${name} untuk periode ${periode} akan dikembalikan ke Belum Bayar.`,
+                icon: 'warning',
+                showCancelButton: true,
+                confirmButtonColor: '#d33',
+                confirmButtonText: 'Ya, Reset',
+                cancelButtonText: 'Batal'
+            });
+
+            if (!res.isConfirmed) return;
+
+            try {
+                const studentRef = db.collection('students').doc(id);
+                const batch = db.batch();
+
+                batch.update(studentRef, {
+                    infaqStatus: false,
+                    paymentMethod: firebase.firestore.FieldValue.delete(),
+                    lastConfirmation: firebase.firestore.FieldValue.delete(),
+                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+                });
+
+                batch.delete(studentRef.collection('payments').doc(periode));
+
+                await batch.commit();
+                Swal.fire('Berhasil', `Status pembayaran periode ${periode} telah di-reset.`, 'success');
+            } catch (err) {
+                Swal.fire('Error', err.message, 'error');
+            }
+        }
+
+        // =====================================================================
+        // PESAN WA PENGINGAT (Sesuai Periode Terpilih)
+        // =====================================================================
+        function tagihWA(phone, name) {
+            if (!phone) {
+                Swal.fire('Peringatan', 'Nomor WA wali tidak ditemukan.', 'warning');
+                return;
+            }
+            let formattedPhone = phone.replace(/[^0-9]/g, '');
+            if (formattedPhone.startsWith('0')) formattedPhone = '62' + formattedPhone.substring(1);
+
+            const msg = `Assalamu'alaikum Wr. Wb.\n\n` +
+                        `Kepada Yth. Wali Santri dari Ananda *${name}*,\n` +
+                        `Pemberitahuan administrasi Infaq TPQ & MADIN Al-Mubarok periode *${getPeriodeAktif()}*.\n\n` +
+                        `Mohon berkenan untuk melakukan pembayaran infaq bulanan.\n` +
+                        `Terima kasih atas perhatian dan kerja samanya. Jazakumullah Khairan Katsiran.\n\n` +
+                        `_Ustadzah Super Admin TPQ Al-Mubarok_`;
+
+            window.open(`https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}`, '_blank');
+        }
+    </script>
+</body>
+</html>
