@@ -72,7 +72,30 @@
                 <input type="text" id="searchInput" onkeyup="renderTable()" placeholder="Cari nama santri atau wali..." class="w-full pl-9 pr-4 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-emerald-500 focus:outline-none">
             </div>
 
-            <div class="flex flex-wrap gap-2 w-full md:w-auto justify-end">
+            <div class="flex flex-wrap gap-2 w-full md:w-auto justify-end items-center">
+                
+                <!-- DROPDOWN RIWAYAT PERIODE (BULAN & TAHUN) -->
+                <div class="flex items-center bg-emerald-50 border border-emerald-300 rounded-lg px-2 py-1 gap-1">
+                    <i class="fas fa-calendar-alt text-emerald-600 text-xs pl-1"></i>
+                    <select id="filterBulan" onchange="gantiPeriode()" class="bg-transparent text-xs font-semibold text-emerald-900 py-1 focus:outline-none">
+                        <option value="Januari">Januari</option>
+                        <option value="Februari">Februari</option>
+                        <option value="Maret">Maret</option>
+                        <option value="April">April</option>
+                        <option value="Mei">Mei</option>
+                        <option value="Juni">Juni</option>
+                        <option value="Juli">Juli</option>
+                        <option value="Agustus">Agustus</option>
+                        <option value="September">September</option>
+                        <option value="Oktober">Oktober</option>
+                        <option value="November">November</option>
+                        <option value="Desember">Desember</option>
+                    </select>
+                    <select id="filterTahun" onchange="gantiPeriode()" class="bg-transparent text-xs font-semibold text-emerald-900 py-1 focus:outline-none">
+                        <!-- Generasi Tahun Otomatis Lewat JS -->
+                    </select>
+                </div>
+
                 <select id="filterKelas" onchange="renderTable()" class="border border-gray-300 rounded-lg text-sm px-3 py-2 focus:ring-2 focus:ring-emerald-500 focus:outline-none">
                     <option value="all">Semua Kelas</option>
                     <option value="Pra-TK (Sunan Ampel)">Pra-TK (Sunan Ampel)</option>
@@ -233,18 +256,70 @@
         const db = firebase.firestore();
 
         let santriList = [];
-        let unsubscribeSantri = null; // penampung listener agar tidak menumpuk
+        let paymentStatusMap = {}; // Menampung status pembayaran riwayat periode terpilih
+        let unsubscribeSantri = null; 
 
         // Avatar Default Fallback
         const avatarLaki = 'https://i.imgur.com/HPPr16Q.jpeg';
         const avatarPerempuan = 'https://i.imgur.com/NcNQ9R3.jpeg';
 
         // =====================================================================
-        // KONEKSI OTOMATIS (tanpa popup login)
-        // - Jika sudah ada sesi login (mis. Ustadzah Fika di portal pada domain
-        //   yang sama), sesi itu langsung dipakai.
-        // - Jika belum ada, masuk otomatis sebagai pengguna anonim agar lolos
-        //   aturan Firestore (request.auth != null).
+        // INISIALISASI DROPDOWN RIWAYAT PERIODE (Mulai Oktober 2026+)
+        // =====================================================================
+        const START_YEAR = 2026;
+        const START_MONTH_INDEX = 9; // Oktober (0-based)
+
+        function initPeriodeDropdown() {
+            const selectTahun = document.getElementById('filterTahun');
+            const selectBulan = document.getElementById('filterBulan');
+            
+            const now = new Date();
+            let currentYear = now.getFullYear();
+            if (currentYear < START_YEAR) currentYear = START_YEAR;
+
+            // Isu Dropdown Tahun dari 2026 hingga 5 tahun ke depan secara dinamis
+            selectTahun.innerHTML = '';
+            for (let y = START_YEAR; y <= currentYear + 5; y++) {
+                const opt = document.createElement('option');
+                opt.value = y;
+                opt.innerText = y;
+                selectTahun.appendChild(opt);
+            }
+
+            // Atur default ke Oktober 2026 atau bulan berjalan jika sudah melebihi
+            const bulanArr = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
+            
+            let defaultMonth = "Oktober";
+            let defaultYear = START_YEAR;
+
+            if (now.getFullYear() > START_YEAR || (now.getFullYear() === START_YEAR && now.getMonth() >= START_MONTH_INDEX)) {
+                defaultMonth = bulanArr[now.getMonth()];
+                defaultYear = now.getFullYear();
+            }
+
+            selectBulan.value = defaultMonth;
+            selectTahun.value = defaultYear;
+
+            updatePeriodeText();
+        }
+
+        function getPeriodeAktif() {
+            const bulan = document.getElementById('filterBulan').value;
+            const tahun = document.getElementById('filterTahun').value;
+            return `${bulan} ${tahun}`;
+        }
+
+        function updatePeriodeText() {
+            document.getElementById('periodeTagihanText').innerText = `Periode: ${getPeriodeAktif()}`;
+        }
+
+        function gantiPeriode() {
+            updatePeriodeText();
+            refreshData();
+        }
+
+        // =====================================================================
+        // KONEKSI OTOMATIS
         // =====================================================================
         function setTabelPesan(html) {
             document.getElementById('santriTableBody').innerHTML =
@@ -253,13 +328,14 @@
 
         auth.onAuthStateChanged(async (user) => {
             if (user) {
+                initPeriodeDropdown();
                 refreshData();
                 return;
             }
 
             setTabelPesan('<i class="fas fa-circle-notch fa-spin text-2xl text-emerald-600"></i><p class="mt-2 text-xs">Menghubungkan ke Portal Si Barok...</p>');
             try {
-                await auth.signInAnonymously(); // setelah berhasil, onAuthStateChanged jalan lagi
+                await auth.signInAnonymously();
             } catch (e) {
                 console.error(e);
                 let pesan = e.message;
@@ -271,278 +347,15 @@
         });
 
         // =====================================================================
-        // PERIODE AKTIF
-        // =====================================================================
-        function getPeriodeAktif() {
-            const now = new Date();
-            let month = now.getMonth();
-            let year = now.getFullYear();
-            if (now.getDate() >= 25) {
-                month++;
-                if (month > 11) { month = 0; year++; }
-            }
-            const bulanArr = ["Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"];
-            return `${bulanArr[month]} ${year}`;
-        }
-
-        document.getElementById('periodeTagihanText').innerText = `Periode: ${getPeriodeAktif()}`;
-
-        // =====================================================================
-        // TARIK DATA SANTRI (real-time, 1 listener saja)
+        // TARIK DATA SANTRI & RIWAYAT PEMBAYARAN SPESIFIK PERIODE
         // =====================================================================
         function refreshData() {
             if (!auth.currentUser) return;
 
-            setTabelPesan('<i class="fas fa-circle-notch fa-spin text-2xl text-emerald-600"></i><p class="mt-2 text-xs">Mengambil data santri terbaru...</p>');
+            const periode = getPeriodeAktif();
+            setTabelPesan('<i class="fas fa-circle-notch fa-spin text-2xl text-emerald-600"></i><p class="mt-2 text-xs">Mengambil data santri & riwayat ' + periode + '...</p>');
 
-            // Matikan listener lama agar tidak dobel
             if (unsubscribeSantri) unsubscribeSantri();
 
-            unsubscribeSantri = db.collection('students').orderBy('name', 'asc').onSnapshot((snapshot) => {
-                santriList = [];
-                snapshot.forEach(doc => {
-                    santriList.push({ id: doc.id, ...doc.data() });
-                });
-                renderTable();
-            }, (error) => {
-                console.error(error);
-                document.getElementById('santriTableBody').innerHTML =
-                    `<tr><td colspan="7" class="text-center py-4 text-red-500">
-                        Gagal memuat data dari Portal Si Barok (${error.code || 'error'}).<br>
-                        <span class="text-xs text-gray-500">${error.message}</span>
-                    </td></tr>`;
-            });
-        }
-
-        // =====================================================================
-        // RENDER TABEL & STATISTIK
-        // =====================================================================
-        function renderTable() {
-            const tbody = document.getElementById('santriTableBody');
-            const search = document.getElementById('searchInput').value.toLowerCase();
-            const filterKelas = document.getElementById('filterKelas').value;
-            const filterStatus = document.getElementById('filterStatus').value;
-
-            let filtered = santriList.filter(s => {
-                const matchSearch = (s.name && s.name.toLowerCase().includes(search)) ||
-                                    (s.parentPhone && s.parentPhone.includes(search));
-                const matchKelas = filterKelas === 'all' || s.class === filterKelas;
-
-                const isLunas = s.infaqStatus === true || s.infaqStatus === 'Lunas';
-                const matchStatus = filterStatus === 'all' ||
-                                    (filterStatus === 'lunas' && isLunas) ||
-                                    (filterStatus === 'belum' && !isLunas);
-
-                return matchSearch && matchKelas && matchStatus;
-            });
-
-            // Update Statistik
-            let lunasCount = 0;
-            let totalNominal = 0;
-
-            santriList.forEach(s => {
-                if (s.infaqStatus === true || s.infaqStatus === 'Lunas') {
-                    lunasCount++;
-                    totalNominal += 100000;
-                }
-            });
-
-            document.getElementById('statTotalSantri').innerText = santriList.length;
-            document.getElementById('statLunas').innerText = lunasCount;
-            document.getElementById('statBelum').innerText = santriList.length - lunasCount;
-            document.getElementById('statTotalNominal').innerText = `Rp ${totalNominal.toLocaleString('id-ID')}`;
-
-            if (filtered.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="7" class="text-center py-6 text-gray-400">Data santri tidak ditemukan.</td></tr>`;
-                return;
-            }
-
-            let html = '';
-            filtered.forEach((s, index) => {
-                const isLunas = s.infaqStatus === true || s.infaqStatus === 'Lunas';
-                const safeName = (s.name || '-').replace(/'/g, "’");
-                const statusBadge = isLunas
-                    ? `<span class="bg-emerald-100 text-emerald-800 text-xs px-2.5 py-1 rounded-full font-semibold"><i class="fas fa-check-circle mr-1"></i>Lunas</span>`
-                    : `<span class="bg-rose-100 text-rose-800 text-xs px-2.5 py-1 rounded-full font-semibold"><i class="fas fa-clock mr-1"></i>Belum</span>`;
-
-                const photoUrl = s.photo || (s.gender === 'Perempuan' ? avatarPerempuan : avatarLaki);
-
-                html += `
-        <tr class="hover:bg-emerald-50/50 transition cursor-pointer" onclick="showDetailModal('${s.id}')">
-            <td class="px-4 py-3 font-medium text-gray-500">${index + 1}</td>
-            <td class="px-4 py-3">
-                <div class="flex items-center space-x-3">
-                    <img src="${photoUrl}" class="w-10 h-10 rounded-full object-cover border border-emerald-500/30 flex-shrink-0" alt="Avatar">
-                    <div>
-                        <div class="font-bold text-gray-800 hover:text-emerald-700">${s.name || '-'}</div>
-                        <div class="text-xs text-gray-400">NIS: ${s.nis || '-'}</div>
-                    </div>
-                </div>
-            </td>
-            <td class="px-4 py-3">
-                <div class="font-medium text-gray-700">${s.class || '-'}</div>
-                <div class="text-xs text-emerald-600 font-semibold">${s.jilid || '-'}</div>
-            </td>
-            <td class="px-4 py-3">${s.parentPhone || '-'}</td>
-            <td class="px-4 py-3 font-medium">${isLunas ? 'Rp 100.000' : 'Rp 0'}</td>
-            <td class="px-4 py-3 text-center">${statusBadge}</td>
-            <td class="px-4 py-3 text-center no-print" onclick="event.stopPropagation()">
-                <div class="flex items-center justify-center gap-2">
-                    ${isLunas ? `
-                        <button onclick="batalBayar('${s.id}', '${safeName}')" title="Batalkan / Reset Lunas" class="bg-gray-100 hover:bg-rose-100 text-rose-600 p-2 rounded-lg text-xs transition">
-                            <i class="fas fa-undo"></i> Reset
-                        </button>
-                    ` : `
-                        <button onclick="openModal('${s.id}', '${safeName}')" title="Input Lunas Langsung" class="bg-emerald-600 hover:bg-emerald-700 text-white px-3 py-1.5 rounded-lg text-xs font-semibold transition">
-                            <i class="fas fa-check mr-1"></i> Tandai Lunas
-                        </button>
-                        <button onclick="tagihWA('${s.parentPhone || ''}', '${safeName}')" title="Kirim Tagihan WA" class="bg-green-500 hover:bg-green-600 text-white p-2 rounded-lg text-xs transition">
-                            <i class="fab fa-whatsapp"></i>
-                        </button>
-                    `}
-                </div>
-            </td>
-        </tr>`;
-            });
-            tbody.innerHTML = html;
-        }
-
-        // =====================================================================
-        // MODAL DETAIL SANTRI
-        // =====================================================================
-        function showDetailModal(id) {
-            const santri = santriList.find(s => s.id === id);
-            if (!santri) return;
-
-            const photoUrl = santri.photo || (santri.gender === 'Perempuan' ? avatarPerempuan : avatarLaki);
-
-            document.getElementById('detailPhoto').src = photoUrl;
-            document.getElementById('detailName').innerText = santri.name || '-';
-            document.getElementById('detailClass').innerText = santri.class || '-';
-            document.getElementById('detailNis').innerText = santri.nis || '-';
-            document.getElementById('detailJilid').innerText = santri.jilid || '-';
-            document.getElementById('detailGender').innerText = santri.gender || '-';
-            document.getElementById('detailTeacher').innerText = santri.teacher || '-';
-            document.getElementById('detailEmail').innerText = santri.parentEmail || '-';
-
-            document.getElementById('detailModal').classList.remove('hidden');
-        }
-
-        function closeDetailModal() {
-            document.getElementById('detailModal').classList.add('hidden');
-        }
-
-        // =====================================================================
-        // MODAL PEMBAYARAN
-        // =====================================================================
-        function openModal(id, name) {
-            document.getElementById('modalStudentId').value = id;
-            document.getElementById('modalStudentName').value = name;
-            document.getElementById('bayarModal').classList.remove('hidden');
-        }
-
-        function closeModal() {
-            document.getElementById('bayarModal').classList.add('hidden');
-        }
-
-        // Simpan pembayaran langsung oleh Ustadzah Super Admin
-        async function simpanPembayaran(e) {
-            e.preventDefault();
-            const id = document.getElementById('modalStudentId').value;
-            const nominal = document.getElementById('modalNominal').value;
-            const metode = document.getElementById('modalMetode').value;
-            const catatan = document.getElementById('modalCatatan').value;
-            const periode = getPeriodeAktif();
-
-            try {
-                const batch = db.batch();
-                const studentRef = db.collection('students').doc(id);
-                const paymentRef = studentRef.collection('payments').doc(periode);
-
-                batch.update(studentRef, {
-                    infaqStatus: true,
-                    paymentMethod: metode,
-                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-                });
-
-                batch.set(paymentRef, {
-                    amount: parseInt(nominal),
-                    month: periode,
-                    method: metode,
-                    note: catatan,
-                    date: firebase.firestore.FieldValue.serverTimestamp()
-                });
-
-                await batch.commit();
-
-                closeModal();
-                document.getElementById('formBayar').reset();
-                document.getElementById('modalNominal').value = 100000;
-                Swal.fire('Berhasil', 'Pembayaran infaq berhasil dicatat lunas!', 'success');
-            } catch (err) {
-                Swal.fire('Error', 'Gagal menyimpan pembayaran: ' + err.message, 'error');
-            }
-        }
-
-        // Reset status lunas dari Buku Besar
-        async function batalBayar(id, name) {
-            const res = await Swal.fire({
-                title: 'Reset Pembayaran?',
-                text: `Status infaq ananda ${name} akan dikembalikan ke Belum Bayar.`,
-                icon: 'warning',
-                showCancelButton: true,
-                confirmButtonColor: '#d33',
-                confirmButtonText: 'Ya, Reset',
-                cancelButtonText: 'Batal'
-            });
-
-            if (!res.isConfirmed) return;
-
-            try {
-                const periode = getPeriodeAktif();
-                const studentRef = db.collection('students').doc(id);
-                const batch = db.batch();
-
-                // 1. Reset dokumen utama santri
-                batch.update(studentRef, {
-                    infaqStatus: false,
-                    paymentMethod: firebase.firestore.FieldValue.delete(),
-                    lastConfirmation: firebase.firestore.FieldValue.delete(),
-                    updatedAt: firebase.firestore.FieldValue.serverTimestamp()
-                });
-
-                // 2. Hapus catatan pembayaran periode aktif di sub-collection
-                batch.delete(studentRef.collection('payments').doc(periode));
-
-                await batch.commit();
-
-                // Tidak perlu refreshData(): onSnapshot sudah memperbarui tabel otomatis
-                Swal.fire('Berhasil', 'Status pembayaran telah di-reset.', 'success');
-            } catch (err) {
-                Swal.fire('Error', err.message, 'error');
-            }
-        }
-
-        // =====================================================================
-        // PESAN WA PENGINGAT
-        // =====================================================================
-        function tagihWA(phone, name) {
-            if (!phone) {
-                Swal.fire('Peringatan', 'Nomor WA wali tidak ditemukan.', 'warning');
-                return;
-            }
-            let formattedPhone = phone.replace(/[^0-9]/g, '');
-            if (formattedPhone.startsWith('0')) formattedPhone = '62' + formattedPhone.substring(1);
-
-            const msg = `Assalamu'alaikum Wr. Wb.\n\n` +
-                        `Kepada Yth. Wali Santri dari Ananda *${name}*,\n` +
-                        `Pemberitahuan administrasi Infaq TPQ & MADIN Al-Mubarok periode *${getPeriodeAktif()}*.\n\n` +
-                        `Mohon berkenan untuk melakukan pembayaran infaq bulanan.\n` +
-                        `Terima kasih atas perhatian dan kerja samanya. Jazakumullah Khairan Katsiran.\n\n` +
-                        `_Ustadzah Super Admin TPQ Al-Mubarok_`;
-
-            window.open(`https://wa.me/${formattedPhone}?text=${encodeURIComponent(msg)}`, '_blank');
-        }
-    </script>
-</body>
-</html>
+            unsubscribeSantri = db.collection('students').orderBy('name', 'asc').onSnapshot(async (snapshot) => {
+           
